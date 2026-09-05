@@ -11,7 +11,7 @@ export function projectRequests(messages, users) {
     const f = m.flags?.[ID]
     const user = author(m)
     if (!f || !user) continue
-    if (f.kind === 'intent') {
+    if (f.kind === 'intent' && m.isContentVisible !== false) {
       const d = f.data || {}
       const id = f.v === 1 ? m.id : d.id || m.id
       requests.set(id, {
@@ -38,7 +38,7 @@ export function projectRequests(messages, users) {
       user = author(m),
       request = requests.get(f?.requestId)
     if (!request || !user) continue
-    if (f.kind === 'request-event' && user.isGM) {
+    if (f.kind === 'request-event' && user.isGM && m.isContentVisible !== false) {
       request.events.push({ id: m.id, ...f, author: user.id, timestamp: m.timestamp })
       if (['pending', 'waiting', 'resolved', 'dismissed'].includes(f.status)) request.status = f.status
       if (f.roll && ['skill', 'check', 'save'].includes(f.roll.kind))
@@ -48,7 +48,11 @@ export function projectRequests(messages, users) {
       const prompt = request.prompts.find((p) => p.id === f.promptId)
       if (prompt && !prompt.done && m.speaker?.actor === request.actorId) {
         prompt.done = true
-        request.rolls.push({ id: m.id, promptId: prompt.id, total: m.rolls[0].total })
+        request.rolls.push({
+          id: m.id,
+          promptId: prompt.id,
+          total: m.isContentVisible === false ? null : m.rolls[0].total
+        })
         if (request.status === 'waiting') request.status = 'pending'
       }
     }
@@ -72,6 +76,7 @@ export class RequestService {
     return [...new Set([playerId, ...ChatMessage.getWhisperRecipients('GM').map((u) => u.id)])]
   }
   async submit(actor, token, focus, text, verb) {
+    if (!actor?.isOwner) throw new Error(t('noCharacter'))
     if (!text.trim()) throw new Error(t('describeRequired'))
     if (!game.socket?.connected) throw new Error(t('offline'))
     const data = {
@@ -95,6 +100,8 @@ export class RequestService {
     if (!game.user.isGM) throw new Error(t('gmOnly'))
     const request = this.get(id)
     if (!request) throw new Error(t('unavailable'))
+    if (dc !== undefined && dc !== '' && (!Number.isFinite(Number(dc)) || Number(dc) < 0 || Number(dc) > 100))
+      throw new Error(t('invalidDC'))
     if (dc !== undefined && dc !== '') {
       // Secrets live in a separate GM-only document, never in the shared event.
       await ChatMessage.create({

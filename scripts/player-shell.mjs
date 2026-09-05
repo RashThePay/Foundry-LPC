@@ -15,6 +15,7 @@ import {
 import { entries, activities, roll, activeTemplate, moveTemplate, templateCommand } from './dnd5e-adapter.mjs'
 import { Gestures } from './gestures.mjs'
 import { renderView } from './player-views.mjs'
+import { PromptQueue, edgeIndicator } from './prompts.mjs'
 
 export class PlayerShell {
   constructor(animator, requests) {
@@ -24,7 +25,9 @@ export class PlayerShell {
     this.session = new Lifetime()
     this.stack = []
     this.bubbles = new Map()
-    this.follow = true
+
+    this.prompts = new PromptQueue()
+    this.nativeWindows = new Map()
     this.draft = {}
     this.unread = 0
   }
@@ -41,6 +44,8 @@ export class PlayerShell {
       this.gestures?.destroy()
       this.cancelMove()
       this.clearBubbles()
+      this.objectHints?.destroy()
+      this.objectHints = null
     })
     for (const hook of [
       'updateActor',
@@ -61,6 +66,10 @@ export class PlayerShell {
     ])
       this.life.hook(hook, () => this.refresh())
     this.life.hook('canvasPan', () => this.positionBubbles())
+    for (const hook of ['sightRefresh', 'createTile', 'updateTile', 'deleteTile'])
+      this.life.hook(hook, () => this.refreshObjectHints())
+    for (const hook of ['renderApplicationV2', 'renderApplication'])
+      this.life.hook(hook, (app, html) => this.fitNativeWindow(app, html))
     for (const hook of ['createChatMessage', 'updateChatMessage', 'deleteChatMessage'])
       this.life.hook(hook, (message) => {
         if (hook === 'createChatMessage') this.receiveChat(message)
@@ -83,8 +92,25 @@ export class PlayerShell {
     this.root = document.createElement('main')
     this.root.id = 'flpcm-shell'
     this.root.setAttribute('aria-label', t('playerControls'))
-    this.root.innerHTML = `<header class="flpcm-status"><div class="flpcm-place" data-scene></div><div class="flpcm-turn" data-turn hidden></div></header><div class="flpcm-network" data-network hidden>${esc(t('offline'))}</div><div class="flpcm-camera">${button('recenter', 'recenter')}${button('zoom-in', 'zoomIn')}${button('zoom-out', 'zoomOut')}</div><div class="flpcm-target-card" data-target hidden></div><div class="flpcm-bubbles"></div><div class="flpcm-toasts" aria-live="polite"></div><div class="flpcm-template" hidden>${button('template-left', 'rotateLeft')}${button('template-right', 'rotateRight')}${button('template-confirm', 'place')}${button('template-cancel', 'cancel')}</div><div class="flpcm-movement" hidden></div><div class="flpcm-favorites"></div><div class="flpcm-radial" hidden></div><section class="flpcm-panel" hidden role="dialog" aria-modal="true" aria-labelledby="flpcm-title"><header>${button('back', 'back')}<h2 id="flpcm-title"></h2>${button('close', 'close')}</header><div class="flpcm-panel-body"></div></section><button class="flpcm-native-chat-close" data-command="chat-close" aria-label="${esc(t('closeChat'))}">×</button><nav class="flpcm-dock"><button class="flpcm-identity" data-command="character"><img data-portrait alt=""><span><strong data-name></strong><small data-hp></small><i><i data-hp-fill></i></i></span></button><button class="flpcm-main-action" data-command="radial">${esc(t('act'))}</button><button class="flpcm-chat-button" data-command="chat">${esc(t('chat'))}<b data-unread hidden></b></button><button class="flpcm-chat-button" data-command="more">${esc(t('more'))}</button></nav>`
+    this.root.innerHTML = `<header class="flpcm-status"><div class="flpcm-place" data-scene></div><div class="flpcm-turn" data-turn hidden></div></header><div class="flpcm-network" data-network hidden>${esc(t('offline'))}</div><div class="flpcm-target-card" data-target hidden></div><div class="flpcm-bubbles"></div><div class="flpcm-toasts" aria-live="polite"></div><div class="flpcm-template" hidden>${button('template-left', 'rotateLeft')}${button('template-right', 'rotateRight')}${button('template-confirm', 'place')}${button('template-cancel', 'cancel')}</div><div class="flpcm-movement" hidden></div><div class="flpcm-favorites"></div><div class="flpcm-radial" hidden></div><section class="flpcm-panel" hidden role="dialog" aria-modal="true" aria-labelledby="flpcm-title"><header>${button('back', 'back')}<h2 id="flpcm-title"></h2>${button('close', 'close')}</header><div class="flpcm-panel-body"></div></section><button class="flpcm-native-chat-close" data-command="chat-close" aria-label="${esc(t('closeChat'))}">×</button><nav class="flpcm-dock"><button class="flpcm-identity" data-command="character"><img data-portrait alt=""><span><strong data-name></strong><small data-hp></small><i><i data-hp-fill></i></i></span></button><button class="flpcm-main-action" data-command="radial">${esc(t('act'))}</button><button class="flpcm-chat-button" data-command="chat">${esc(t('chat'))}<b data-unread hidden></b></button><button class="flpcm-chat-button" data-command="more">${esc(t('more'))}</button></nav>`
     document.body.append(this.root)
+    this.q('.flpcm-native-chat-close').textContent = t('closeChat')
+    this.chatCloseButton = this.q('.flpcm-native-chat-close')
+    document.body.append(this.chatCloseButton)
+    this.session.on(this.chatCloseButton, 'click', () => this.closeChat())
+    const edge = document.createElement('button')
+    edge.className = 'flpcm-edge-portrait'
+    edge.dataset.command = 'recenter'
+    edge.setAttribute('aria-label', t('recenter'))
+    edge.hidden = true
+    edge.innerHTML = '<span class="flpcm-edge-arrow"></span><img alt="">'
+    this.root.append(edge)
+    const backdrop = document.createElement('button')
+    backdrop.className = 'flpcm-chat-backdrop'
+    backdrop.dataset.command = 'chat-close'
+    backdrop.setAttribute('aria-label', t('closeChat'))
+    backdrop.hidden = true
+    this.root.prepend(backdrop)
     this.session.on(this.root, 'click', (e) => {
       const target = e.target.closest('[data-command]')
       if (target) this.run(() => this.command(target.dataset.command, target.dataset, target))
@@ -129,8 +155,17 @@ export class PlayerShell {
     this.session.clear()
     this.gestures?.destroy()
     this.clearBubbles()
+    this.objectHints?.destroy()
+    this.objectHints = null
     this.cancelMove()
     this.closeChat()
+    this.chatCloseButton?.remove()
+    for (const [element, original] of this.nativeWindows)
+      if (element.isConnected) {
+        element.classList.remove('flpcm-native-window')
+        element.style.cssText = original
+      }
+    this.nativeWindows.clear()
     this.root?.remove()
     this.root = null
     this.stack = []
@@ -163,16 +198,19 @@ export class PlayerShell {
     const element = canvas?.app?.canvas || canvas?.app?.view
     if (!element) return
     this.gestures = new Gestures(element, {
-      blocked: () => !!this.view || this.chatOpen,
+      blocked: () =>
+        !!this.view ||
+        this.chatOpen ||
+        [...this.nativeWindows.keys()].some(
+          (el) => el.isConnected && el.getClientRects().length && !el.classList.contains('minimized')
+        ),
       tap: (p) => this.run(() => this.tap(p)),
       pan: (dx, dy) => {
-        this.follow = false
         const v = canvas.stage.pivot,
           s = canvas.stage.scale.x
         canvas.pan({ x: v.x - dx / s, y: v.y - dy / s })
       },
       zoom: (ratio, to, from = to) => {
-        this.follow = false
         const before = canvas.canvasCoordinatesFromClient(from)
         const scale = Math.max(0.15, Math.min(3, canvas.stage.scale.x * ratio))
         canvas.pan({ scale })
@@ -194,6 +232,14 @@ export class PlayerShell {
     const v = window.visualViewport
     document.documentElement.style.setProperty('--flpcm-vh', `${v?.height || innerHeight}px`)
     document.documentElement.style.setProperty('--flpcm-vtop', `${v?.offsetTop || 0}px`)
+    this.followToken()
+  }
+  fitNativeWindow(app, html) {
+    if (!this.root || app.id === 'flpcm-gm' || app.hasFrame === false) return
+    const element = html instanceof HTMLElement ? html : html?.[0] || app.element
+    if (!(element instanceof HTMLElement) || !element.querySelector('.window-header')) return
+    if (!this.nativeWindows.has(element)) this.nativeWindows.set(element, element.style.cssText)
+    element.classList.add('flpcm-native-window')
   }
   applyPreferences() {
     document.body.classList.toggle('flpcm-low-effects', setting('lowEffects'))
@@ -211,13 +257,34 @@ export class PlayerShell {
     if (this.q('.flpcm-template')) this.q('.flpcm-template').hidden = !activeTemplate()
   }
   followToken() {
-    if (this.follow && this.primary?.visible && !this.view && !this.chatOpen) {
-      const p = this.primary.center
-      if (p && (p.x !== this.lastFollow?.x || p.y !== this.lastFollow?.y)) {
-        canvas.pan({ x: p.x, y: p.y })
-        this.lastFollow = { ...p }
-      }
+    const indicator = this.q('.flpcm-edge-portrait')
+    if (!indicator) return
+    const token = this.primary
+    if (!token?.visible || this.view || this.chatOpen) {
+      indicator.hidden = true
+      return
     }
+    const viewport = window.visualViewport,
+      point = canvas.clientCoordinatesFromCanvas(token.center)
+    const position = edgeIndicator(point, {
+      left: 10,
+      right: innerWidth - 10,
+      top: (viewport?.offsetTop || 0) + 75,
+      bottom: (viewport?.offsetTop || 0) + (viewport?.height || innerHeight) - 150
+    })
+    indicator.hidden = !position
+    if (!position) return
+    indicator.style.left = `${position.x}px`
+    indicator.style.top = `${position.y - (viewport?.offsetTop || 0)}px`
+    indicator.style.setProperty('--flpcm-direction', `${position.angle}deg`)
+    indicator.querySelector('img').src = this.actor()?.img || 'icons/svg/mystery-man.svg'
+  }
+  async recenter() {
+    if (!this.primary?.visible) return
+    const point = this.primary.center
+    if (setting('reducedMotion')) canvas.pan(point)
+    else await canvas.animatePan({ ...point, duration: 220 })
+    this.followToken()
   }
   async tap(client) {
     const point = canvas.canvasCoordinatesFromClient(client),
@@ -258,6 +325,7 @@ export class PlayerShell {
           tile.visible &&
           !tile.document.hidden &&
           flag(tile.document, 'interaction')?.enabled &&
+          this.canSee(point) &&
           tile.bounds.contains(point.x, point.y)
       )
       .map((tile) => this.objectFocus(tile))
@@ -283,6 +351,32 @@ export class PlayerShell {
         .filter(Boolean),
       placeable: tile
     }
+  }
+  canSee(point) {
+    return (
+      !canvas.visibility?.testVisibility ||
+      canvas.visibility.testVisibility(point, { tolerance: 0, object: this.primary })
+    )
+  }
+  refreshObjectHints() {
+    this.objectHints?.destroy()
+    this.objectHints = null
+    if (!this.root || !canvas.ready || !this.primary) return
+    const visible = list(canvas.tiles?.placeables).filter(
+      (tile) =>
+        tile.visible &&
+        !tile.document.hidden &&
+        flag(tile.document, 'interaction')?.enabled &&
+        tile.center &&
+        this.canSee(tile.center)
+    )
+    if (!visible.length) return
+    const hints = new PIXI.Graphics()
+    hints.eventMode = 'none'
+    hints.lineStyle(2, 0xe5b95c, 0.85)
+    for (const tile of visible) hints.drawCircle(tile.center.x, tile.center.y, 10)
+    canvas.controls.addChild(hints)
+    this.objectHints = hints
   }
   can(kind, activation) {
     return permitted({
@@ -325,7 +419,7 @@ export class PlayerShell {
       if (!game.combat?.started && !setting('confirmExploration')) return await this.commitPath(path)
       this.movePlan = { point, path, scene, tokenId: token.id, key: turnKey(game.combat, scene) }
       this.drawPath(path)
-      const measured = canvas.grid.measurePath(path)
+      const measured = token.measureMovementPath(path)
       const cost = measured.cost ?? measured.distance
       const allowance = Number(this.actor()?.system.attributes?.movement?.walk || 0)
       this.q('.flpcm-movement').innerHTML =
@@ -398,6 +492,20 @@ export class PlayerShell {
   refresh() {
     if (!this.root) return
     this.choosePrimary()
+    this.refreshObjectHints()
+    const saved = flag(game.user, 'favorites')?.[this.actor()?.id]
+    const valid = this.favorites()
+    if (Array.isArray(saved) && JSON.stringify(saved) !== JSON.stringify(valid) && !this.pruning) {
+      this.pruning = true
+      const all = foundry.utils.deepClone(flag(game.user, 'favorites') || {})
+      all[this.actor().id] = valid
+      game.user
+        .setFlag(ID, 'favorites', all)
+        .catch((error) => console.warn(`${ID} | favorites`, error))
+        .finally(() => {
+          this.pruning = false
+        })
+    }
     const actor = this.actor(),
       hp = actor?.system.attributes?.hp
     this.q('[data-scene]').textContent = canvas?.scene?.name || t('loading')
@@ -539,23 +647,27 @@ export class PlayerShell {
     }
   }
   openChat() {
+    if (this.chatOpen) return this.closeChat()
     this.close()
     this.q('.flpcm-radial').hidden = true
     this.chatOpen = true
+    this.gestures?.reset()
+    this.q('.flpcm-chat-backdrop').hidden = false
     document.body.classList.add('flpcm-native-chat')
     ui.sidebar?.changeTab('chat', 'primary', { force: true })
     this.unread = 0
     this.updateUnread()
     requestAnimationFrame(() => {
-      const log = document.querySelector('#chat .chat-log,#chat-log')
+      const log = document.querySelector('#chat .chat-scroll,#chat .chat-log,#chat-log')
       if (log) log.scrollTop = this.chatScroll ?? log.scrollHeight
     })
   }
   closeChat() {
     if (this.chatOpen) {
-      this.chatScroll = document.querySelector('#chat .chat-log,#chat-log')?.scrollTop
+      this.chatScroll = document.querySelector('#chat .chat-scroll,#chat .chat-log,#chat-log')?.scrollTop
     }
     this.chatOpen = false
+    if (this.q('.flpcm-chat-backdrop')) this.q('.flpcm-chat-backdrop').hidden = true
     document.body.classList.remove('flpcm-native-chat')
   }
   updateUnread() {
@@ -567,13 +679,19 @@ export class PlayerShell {
   }
   receiveChat(message) {
     if (!this.root || !message.visible) return
-    if (!this.chatOpen && message.author?.id !== game.user.id) {
+    if (!this.chatOpen && message.author?.id !== game.user.id && message.isContentVisible !== false) {
       this.unread++
       this.updateUnread()
     }
     const f = flag(message, 'kind')
-    if (f === 'request-event' && this.requests.get(flag(message, 'requestId'))?.playerId === game.user.id)
-      this.toast(t('requestUpdated'))
+    if (
+      f === 'request-event' &&
+      message.author?.isGM &&
+      this.requests.get(flag(message, 'requestId'))?.playerId === game.user.id
+    )
+      this.prompts.show(message.id, t('requestUpdated'), flag(message, 'text') || t('rollRequested'), () =>
+        this.open('requests')
+      )
     if (
       message.whisper?.length ||
       message.blind ||
@@ -661,14 +779,8 @@ export class PlayerShell {
     if (command === 'back') return this.back()
     if (command === 'radial') return this.radial()
     if (command === 'recenter') {
-      this.follow = true
-      this.lastFollow = null
-      return this.followToken()
+      return this.recenter()
     }
-    if (command === 'zoom-in' || command === 'zoom-out')
-      return canvas.pan({
-        scale: Math.max(0.15, Math.min(3, canvas.stage.scale.x * (command === 'zoom-in' ? 1.2 : 1 / 1.2)))
-      })
     if (command === 'move-confirm') return this.confirmMove()
     if (command === 'move-cancel') return this.cancelMove()
     if (command === 'target-toggle') {
@@ -763,8 +875,7 @@ export class PlayerShell {
       const token = canvas.tokens.get(data.id)
       if (!token?.actor?.isOwner) throw new Error(t('unavailable'))
       this.primary = token
-      this.follow = true
-      this.lastFollow = null
+
       this.close()
       this.refresh()
       return

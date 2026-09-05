@@ -12,7 +12,7 @@ export default defineConfig({
   webServer: {
     command: 'node tests/server.mjs',
     url: 'http://127.0.0.1:4179/tests/browser/fixture.html',
-    reuseExistingServer: false
+    reuseExistingServer: true
   },
   reporter: 'list'
 })

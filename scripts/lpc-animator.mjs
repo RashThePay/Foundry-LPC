@@ -1,4 +1,4 @@
-import { ID, flag, setting, Lifetime } from './core.mjs'
+import { ID, flag, setting, Lifetime, t } from './core.mjs'
 
 export const LPC_DEFAULTS = Object.freeze({
   frameWidth: 64,
@@ -25,13 +25,13 @@ export function validateSheet(width, height, config) {
   )
     throw new Error('Invalid LPC frame dimensions or FPS.')
   for (const state of Object.values(config.states)) {
-    const rows = state.directional === false ? 0 : Math.max(...Object.values(config.directions))
+    const offset = state.directional === false ? 0 : Math.max(...Object.values(config.directions))
     if (
       !Number.isInteger(state.row) ||
       state.row < 0 ||
       !Number.isInteger(state.frames) ||
       state.frames < 1 ||
-      (state.row + rows + 1) * config.frameHeight > height ||
+      (state.row + offset + 1) * config.frameHeight > height ||
       ((state.frame || 0) + state.frames) * config.frameWidth > width
     )
       throw new Error(`LPC sheet ${width}×${height} does not contain the configured frames.`)
@@ -49,19 +49,40 @@ export function directionFor(dx, dy, current = 'down') {
         ? 'up'
         : 'down'
 }
+export function movementState(previous, position, lastMotion, now) {
+  const dx = position.x - previous.x,
+    dy = position.y - previous.y
+  const moving = Math.hypot(dx, dy) > 0.05
+  return { dx, dy, lastMotion: moving ? now : lastMotion, walking: moving || now - lastMotion < 100 }
+}
+
+// Animate the native token mesh. It retains Foundry visibility, lighting, hit testing,
+// drag previews and alpha; a second sprite in the token controls layer does not.
 export class LPCAnimator {
   constructor() {
     this.entries = new Map()
     this.pending = new Map()
+    this.failed = new Map()
+    this.motionPreference = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)')
     this.generation = 0
     this.life = new Lifetime()
+    this.tick = () => this.update(performance.now())
   }
   install() {
-    this.life.hook('canvasReady', () => this.refreshAll())
-    this.life.hook('canvasTearDown', () => this.clear())
-    this.life.hook('drawToken', (token) => this.attach(token))
-    this.life.hook('refreshToken', (token) => this.sync(token))
-    this.life.hook('destroyToken', (token) => this.detach(token.id))
+    this.life.hook('canvasReady', () => {
+      this.bindTicker()
+      this.refreshAll()
+    })
+    this.life.hook('canvasTearDown', () => {
+      this.unbindTicker()
+      this.clear()
+    })
+    this.life.hook('drawToken', (token) => this.attach(token, true))
+    this.life.hook('refreshToken', (token) => {
+      if (!this.entries.has(token)) this.attach(token)
+      else this.sync(token)
+    })
+    this.life.hook('destroyToken', (token) => this.detach(token))
     this.life.hook('updateToken', (document, change) => {
       if (change.flags?.[ID] || Object.keys(change).some((k) => k.includes(ID)))
         this.attach(document.object, true)
@@ -70,37 +91,78 @@ export class LPCAnimator {
       if (change.flags?.[ID] || Object.keys(change).some((k) => k.includes(ID)))
         for (const token of canvas.tokens?.placeables || [])
           if (token.actor?.id === actor.id) this.attach(token, true)
+      if (change.system?.attributes?.hp?.value !== undefined)
+        for (const token of canvas.tokens?.placeables || [])
+          if (token.actor?.id === actor.id) {
+            const entry = this.entries.get(token),
+              hp = Number(actor.system.attributes.hp.value)
+            if (entry && hp < entry.hp) this.play(token, 'hurt')
+            if (entry) entry.hp = hp
+          }
     })
-    this.life.hook('moveToken', (document) => this.moving(document))
-    this.life.hook('stopToken', (document) => this.stop(document))
     this.life.hook('dnd5e.postUseActivity', (activity) => {
       const token =
         activity.actor?.token?.object ||
-        (canvas.tokens?.placeables || []).find((t) => t.actor?.id === activity.actor?.id)
+        (canvas.tokens?.placeables || []).find((token) => token.actor?.id === activity.actor?.id)
       if (token)
         this.play(
           token,
           activity.item?.type === 'spell'
             ? 'cast'
-            : activity.attack?.type?.classification === 'ranged'
+            : activity.attack?.type?.value === 'ranged' || activity.actionType?.startsWith('r')
               ? 'shoot'
               : 'slash'
         )
     })
-    if (canvas?.ready) this.refreshAll()
+    this.life.hook('createChatMessage', (message) => {
+      if (
+        message.author?.id === game.user.id ||
+        !message.isContentVisible ||
+        message.rolls?.length ||
+        message.speaker?.scene !== canvas.scene?.id
+      )
+        return
+      const data = message.flags?.dnd5e
+      if (!data?.activity?.id || data.messageType === 'roll') return
+      const token = canvas.tokens?.get(message.speaker?.token)
+      if (!token?.visible) return
+      const item = token.actor?.items.get(data.item?.id),
+        activity = item?.system.activities?.get(data.activity.id)
+      if (activity)
+        this.play(
+          token,
+          item.type === 'spell' ? 'cast' : activity.actionType?.startsWith('r') ? 'shoot' : 'slash'
+        )
+    })
+    if (canvas?.ready) {
+      this.bindTicker()
+      this.refreshAll()
+    }
+  }
+  bindTicker() {
+    this.unbindTicker()
+    this.ticker = canvas.app?.ticker
+    this.ticker?.add(this.tick, this, 0)
+  }
+  unbindTicker() {
+    this.ticker?.remove(this.tick, this)
+    this.ticker = null
   }
   config(token) {
+    const overrides={...(flag(token.document,'lpc')||{})}
+    if(!overrides.src)delete overrides.src
     return foundry.utils.mergeObject(
       structuredClone(LPC_DEFAULTS),
-      { ...(flag(token.actor, 'lpc') || {}), ...(flag(token.document, 'lpc') || {}) },
+      { ...(flag(token.actor, 'lpc') || {}), ...overrides },
       { inplace: false }
     )
   }
   enabled() {
     return (
       setting('spriteEffects') &&
+      !setting('lowEffects') &&
       !setting('reducedMotion') &&
-      !globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+      !this.motionPreference?.matches
     )
   }
   async refreshAll() {
@@ -108,58 +170,63 @@ export class LPCAnimator {
     await Promise.all((canvas.tokens?.placeables || []).map((token) => this.attach(token)))
   }
   async attach(token, replace = false) {
-    if (!token?.mesh) return
-    if (replace) this.detach(token.id)
+    if (!token?.mesh || token.destroyed) return
+    if (replace) this.detach(token)
     const config = this.config(token)
+    const signature=JSON.stringify(config)
+    if(!replace&&this.failed.get(token)===signature)return
     if (!config.src || config.enabled === false || !setting('spriteEffects')) {
-      this.detach(token.id)
+      this.detach(token)
       return
     }
-    if (this.entries.has(token.id)) return this.sync(token)
-    if (this.pending.has(token.id)) return
+    if (this.entries.has(token)) return this.sync(token)
+    if (this.pending.has(token)) return
     const generation = this.generation,
       job = {}
-    this.pending.set(token.id, job)
+    this.pending.set(token, job)
     try {
       const source = await PIXI.Assets.load(config.src)
       if (
         generation !== this.generation ||
-        this.pending.get(token.id) !== job ||
+        this.pending.get(token) !== job ||
         token.destroyed ||
         token.document.parent?.id !== canvas.scene?.id
       )
         return
       const baseTexture = source.baseTexture || source
       validateSheet(source.width || baseTexture.width, source.height || baseTexture.height, config)
-      const entry = {
+      this.entries.set(token, {
         token,
         baseTexture,
         config,
         direction: 'down',
         state: 'idle',
         cache: new Map(),
-        originalAlpha: token.mesh.alpha
-      }
-      const sprite = new PIXI.AnimatedSprite(this.frames(entry, 'idle'))
-      entry.sprite = sprite
-      sprite.anchor.set(0.5)
-      token.addChild(sprite)
-      this.entries.set(token.id, entry)
-      token.mesh.alpha = 0
+        originalTexture: token.mesh.texture,
+        hp: Number(token.actor?.system?.attributes?.hp?.value),
+        started: performance.now(),
+        lastMotion: -Infinity,
+        last: this.position(token),
+        frame: null,
+        actionUntil: 0
+      })
       this.sync(token)
-      this.play(token, 'idle')
     } catch (error) {
+      this.failed.set(token,signature)
       console.warn(`${ID} | LPC ${token.name}`, error)
-      if (game.user.isGM) ui.notifications.warn(`${token.name}: ${error.message}`)
+      if (game.user.isGM) ui.notifications.warn(t('spriteLoadFailed', { name: token.name }))
     } finally {
-      if (this.pending.get(token.id) === job) this.pending.delete(token.id)
+      if (this.pending.get(token) === job) this.pending.delete(token)
     }
   }
-  frames(entry, stateName) {
-    const key = `${stateName}:${entry.direction}`
+  position(token) {
+    return { x: token.mesh?.position?.x ?? token.x ?? 0, y: token.mesh?.position?.y ?? token.y ?? 0 }
+  }
+  frames(entry) {
+    const key = `${entry.state}:${entry.direction}`
     if (entry.cache.has(key)) return entry.cache.get(key)
     const { config } = entry,
-      state = config.states[stateName],
+      state = config.states[entry.state],
       row = state.row + (state.directional === false ? 0 : Number(config.directions[entry.direction]))
     const frames = Array.from(
       { length: state.frames },
@@ -177,85 +244,89 @@ export class LPCAnimator {
     entry.cache.set(key, frames)
     return frames
   }
-  sync(token) {
-    const entry = this.entries.get(token?.id)
-    if (!entry || !token.mesh) return
-    entry.sprite.position.set(token.w / 2, token.h / 2)
-    entry.sprite.width = token.w
-    entry.sprite.height = token.h
-    entry.sprite.visible = token.visible && !token.document.hidden
-    entry.sprite.alpha = token.alpha ?? 1
-    token.mesh.alpha = 0
-  }
-  moving(document) {
-    const entry = this.entries.get(document.id)
-    if (!entry) return
-    entry.movement = true
-    entry.last = { x: entry.token.x, y: entry.token.y }
-    this.play(document.id, 'walk')
-    clearInterval(entry.poll)
-    entry.poll = setInterval(() => {
-      if (!entry.movement) return
-      const dx = entry.token.x - entry.last.x,
-        dy = entry.token.y - entry.last.y
-      const direction = directionFor(dx, dy, entry.direction)
-      entry.last = { x: entry.token.x, y: entry.token.y }
-      if (direction !== entry.direction) {
-        entry.direction = direction
-        this.play(document.id, 'walk')
+  update(now) {
+    for (const [token, entry] of this.entries) {
+      if (token.destroyed || !token.mesh) {
+        this.detach(token)
+        continue
       }
-    }, 60)
-  }
-  async stop(document) {
-    const entry = this.entries.get(document.id)
-    if (!entry) return
-    const movement = entry.token.movementAnimationPromise
-    await movement?.catch?.(() => {})
-    if (
-      this.entries.get(document.id) !== entry ||
-      (entry.token.movementAnimationPromise && entry.token.movementAnimationPromise !== movement)
-    )
-      return
-    entry.movement = false
-    clearInterval(entry.poll)
-    this.play(document.id, 'idle')
-  }
-  play(tokenOrId, stateName, { duration } = {}) {
-    const entry = this.entries.get(typeof tokenOrId === 'string' ? tokenOrId : tokenOrId?.id)
-    if (!entry || !entry.config.states[stateName]) return false
-    clearTimeout(entry.timer)
-    entry.sprite.onComplete = null
-    entry.state = stateName
-    entry.sprite.textures = this.frames(entry, stateName)
-    entry.sprite.loop = entry.config.states[stateName].loop === true
-    entry.sprite.animationSpeed = Number(entry.config.fps) / 60
-    if (stateName === 'idle' || !this.enabled()) {
-      entry.sprite.gotoAndStop(0)
-      return true
+      const position = this.position(token),
+        motion = movementState(entry.last, position, entry.lastMotion, now)
+      entry.last = position
+      entry.lastMotion = motion.lastMotion
+      entry.direction = directionFor(motion.dx, motion.dy, entry.direction)
+      if (entry.actionUntil <= now) {
+        const desired = motion.walking ? 'walk' : 'idle'
+        if (entry.state !== desired) {
+          entry.state = desired
+          entry.started = now
+        }
+      }
+      this.sync(token, now)
     }
-    entry.sprite.onComplete = () => this.play(entry.token, entry.movement ? 'walk' : 'idle')
-    entry.sprite.gotoAndPlay(0)
-    if (duration) entry.timer = setTimeout(() => this.play(entry.token, 'idle'), duration)
+  }
+  sync(token, now = performance.now()) {
+    const entry = this.entries.get(token)
+    if (!entry || !token.mesh) return
+    // A redraw can replace the native texture. Remember it before restoring our frame.
+    if (
+      entry.frame &&
+      token.mesh.texture !== entry.frame &&
+      ![...entry.cache.values()].some((frames) => frames.includes(token.mesh.texture))
+    )
+      entry.originalTexture = token.mesh.texture
+    const frames = this.frames(entry),
+      state = entry.config.states[entry.state]
+    const index =
+      this.enabled() && entry.state !== 'idle'
+        ? Math.floor((Math.max(0, now - entry.started) * entry.config.fps) / 1000)
+        : 0
+    const frame = frames[state.loop ? index % frames.length : Math.min(index, frames.length - 1)]
+    if (token.mesh.texture !== frame) {
+      token.mesh.texture = frame
+      const texture = token.document.texture || {}
+      token.mesh.resize?.(token.w, token.h, {
+        fit: texture.fit || 'contain',
+        scaleX: texture.scaleX ?? 1,
+        scaleY: texture.scaleY ?? 1
+      })
+    }
+    entry.frame = frame
+  }
+  play(tokenOrId, state, { duration } = {}) {
+    const token = typeof tokenOrId === 'string' ? canvas.tokens?.get(tokenOrId) : tokenOrId
+    const entry = this.entries.get(token)
+    if (!entry || !entry.config.states[state]) return false
+    entry.state = state
+    entry.started = performance.now()
+    entry.actionUntil = ['walk', 'idle'].includes(state)
+      ? 0
+      : entry.started + (duration || (entry.config.states[state].frames / entry.config.fps) * 1000)
+    this.sync(token)
     return true
   }
-  detach(id) {
-    this.pending.delete(id)
-    const entry = this.entries.get(id)
+  detach(tokenOrId) {
+    const token = typeof tokenOrId === 'string' ? canvas.tokens?.get(tokenOrId) : tokenOrId
+    this.pending.delete(token)
+    this.failed.delete(token)
+    const entry = this.entries.get(token)
     if (!entry) return
-    clearTimeout(entry.timer)
-    clearInterval(entry.poll)
-    if (entry.token.mesh) entry.token.mesh.alpha = entry.originalAlpha
-    entry.sprite.destroy({ children: true, texture: false, baseTexture: false })
+    if (token.mesh && !token.mesh.destroyed && token.mesh.texture === entry.frame) {
+      token.mesh.texture = entry.originalTexture
+      token.renderFlags?.set({ refreshMesh: true })
+    }
     for (const frames of entry.cache.values()) for (const texture of frames) texture.destroy(false)
-    this.entries.delete(id)
+    this.entries.delete(token)
   }
   clear() {
     this.generation++
     this.pending.clear()
-    for (const id of this.entries.keys()) this.detach(id)
+    this.failed.clear()
+    for (const token of this.entries.keys()) this.detach(token)
   }
   destroy() {
     this.life.clear()
+    this.unbindTicker()
     this.clear()
   }
 }

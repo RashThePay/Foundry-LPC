@@ -73,7 +73,7 @@ export function renderView(shell, view, data = {}) {
   if (view === 'interact') {
     const draft = shell.draft || {}
     const verbs = shell.focus?.verbs || ['inspect', 'open', 'use', 'take', 'push', 'listen']
-    return `<p>${esc(t('intentHelp', { target: shell.focus?.name || t('scene') }))}</p><label>${esc(t('verb'))}<select name="verb">${choices([['', t('custom')], ...verbs.map((v) => [v, t(v)])], draft.verb)}</select></label><label>${esc(t('description'))}<textarea name="intent" maxlength="800" rows="5" placeholder="${esc(t('intentPlaceholder'))}">${esc(draft.text || '')}</textarea></label>${button('send-intent', 'sendIntent')}`
+    return `${shell.focus?.description?`<p>${esc(shell.focus.description)}</p>`:''}<p>${esc(t('intentHelp', { target: shell.focus?.name || t('scene') }))}</p><label>${esc(t('verb'))}<select name="verb">${choices([['', t('custom')], ...verbs.map((v) => [v, t(v)])], draft.verb)}</select></label><label>${esc(t('description'))}<textarea name="intent" maxlength="800" rows="5" placeholder="${esc(t('intentPlaceholder'))}">${esc(draft.text || '')}</textarea></label>${button('send-intent', 'sendIntent')}`
   }
   if (!actor) return `<p>${esc(t('noCharacter'))}</p>`
   if (view === 'character') {
@@ -160,7 +160,9 @@ export function renderRequest(request) {
   return `<article class="flpcm-card"><header><strong>${esc(request.targetName)}</strong><span class="flpcm-chip">${esc(t(request.status))}</span></header><p>${esc(request.text)}</p>${request.events
     .filter((e) => e.text)
     .map((e) => `<p>${esc(e.text)}</p>`)
-    .join('')}${request.rolls.map((r) => `<p>${esc(t('rollResult', { total: r.total }))}</p>`).join('')}${
+    .join(
+      ''
+    )}${request.rolls.map((r) => `<p>${esc(r.total === null ? t('hiddenRoll') : t('rollResult', { total: r.total }))}</p>`).join('')}${
     !['resolved', 'dismissed'].includes(request.status)
       ? request.prompts
           .filter((p) => !p.done)

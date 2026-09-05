@@ -16,6 +16,7 @@
   --safe-bottom: max(10px, env(safe-area-inset-bottom));
   --safe-left: max(10px, env(safe-area-inset-left));
 }
+
 .flpcm-active {
   overflow: hidden;
   overscroll-behavior: none;
@@ -23,6 +24,8 @@
 .flpcm-active #board,
 .flpcm-active #board canvas {
   touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
 }
 .flpcm-active #ui-top,
 .flpcm-active #ui-left,
@@ -824,4 +827,170 @@
     bottom: var(--safe-bottom);
     z-index: 15;
   }
+}
+
+/* Chat is a bounded panel above the dock; the exposed map dismisses it. */
+.flpcm-native-chat #ui-right {
+  top: auto !important;
+  bottom: calc(100dvh - var(--flpcm-vtop) - var(--flpcm-vh) + var(--safe-bottom) + 88px) !important;
+  left: max(var(--safe-left), calc((100vw - 540px) / 2)) !important;
+  right: max(var(--safe-right), calc((100vw - 540px) / 2)) !important;
+  height: min(560px, calc(var(--flpcm-vh) - 190px)) !important;
+  min-height: 150px;
+  --sidebar-width: 100%;
+  --sidebar-full-width: 100%;
+  --sidebar-scroll-gutter: 0px;
+}
+.flpcm-native-chat #sidebar-content,
+.flpcm-native-chat #sidebar-content.expanded,
+.flpcm-native-chat #sidebar-content .tab,
+.flpcm-native-chat #chat,
+.flpcm-native-chat #chat .chat-scroll,
+.flpcm-native-chat #chat .chat-log {
+  width: 100% !important;
+  max-width: none !important;
+  min-width: 0 !important;
+  margin-inline: 0 !important;
+  box-sizing: border-box;
+}
+.flpcm-native-chat #sidebar-content {
+  display: flex !important;
+  align-items: stretch !important;
+}
+.flpcm-native-chat #chat {
+  display: flex !important;
+  flex-direction: column;
+  padding-top: 54px !important;
+}
+.flpcm-native-chat #chat .chat-scroll {
+  flex: 1 1 0;
+  min-height: 0;
+}
+.flpcm-native-chat #chat .chat-log {
+  padding-inline: 0;
+}
+.flpcm-native-chat .flpcm-native-chat-close {
+  position: fixed;
+  top: auto;
+  bottom: calc(
+    100dvh - var(--flpcm-vtop) - var(--flpcm-vh) + var(--safe-bottom) + 88px +
+      min(560px, var(--flpcm-vh) - 190px) - 50px
+  );
+  right: max(calc(var(--safe-right) + 8px), calc((100vw - 540px) / 2 + 8px));
+  font:
+    14px/1.2 system-ui,
+    sans-serif;
+}
+#flpcm-shell .flpcm-chat-backdrop {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  background: #0003;
+  z-index: 1;
+  padding: 0;
+  cursor: default;
+}
+#flpcm-shell .flpcm-dock {
+  z-index: 95;
+}
+#flpcm-shell .flpcm-edge-portrait {
+  position: absolute;
+  z-index: 4;
+  width: 52px;
+  height: 52px;
+  min-width: 52px;
+  border: 2px solid var(--flpcm-gold);
+  border-radius: 50%;
+  padding: 3px;
+  background: #152131;
+  transform: translate(-50%, -50%);
+  box-shadow: 0 3px 16px #0009;
+}
+.flpcm-edge-portrait img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 50%;
+  position: relative;
+}
+.flpcm-edge-arrow {
+  position: absolute;
+  inset: -9px;
+  border-radius: 50%;
+  transform: rotate(var(--flpcm-direction));
+}
+.flpcm-edge-arrow::after {
+  content: '';
+  position: absolute;
+  right: -4px;
+  top: calc(50% - 6px);
+  border-left: 9px solid var(--flpcm-gold);
+  border-top: 6px solid transparent;
+  border-bottom: 6px solid transparent;
+}
+#flpcm-gm-launcher {
+  left: auto !important;
+  bottom: auto !important;
+  top: 14px;
+  right: 90px;
+  font-family: system-ui, sans-serif !important;
+}
+#flpcm-gm-launcher.flpcm-in-sidebar {
+  position: relative;
+  inset: auto !important;
+  min-width: 44px;
+  max-width: 100px;
+  padding: 7px;
+  font-size: 12px;
+}
+.flpcm-workspace button:not(.icon),
+.flpcm-workspace label,
+.flpcm-workspace p,
+.flpcm-workspace select {
+  font-family: system-ui, sans-serif;
+}
+.flpcm-active .flpcm-native-window {
+  inset: auto !important;
+  left: 8px !important;
+  top: calc(var(--flpcm-vtop) + 8px) !important;
+  width: calc(100vw - 16px) !important;
+  min-width: 0 !important;
+  max-height: calc(var(--flpcm-vh) - 16px) !important;
+  transform: none !important;
+}
+.flpcm-active .flpcm-native-window .window-header {
+  flex: none;
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  min-width: 0;
+}
+.flpcm-active .flpcm-native-window .window-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.flpcm-active .flpcm-native-window .window-content {
+  min-width: 0 !important;
+  max-width: 100%;
+  overflow: auto !important;
+}
+
+.flpcm-native-chat .flpcm-native-chat-close {
+  z-index: 110;
+  min-height: 44px;
+  padding: 9px 12px;
+  border: 1px solid #ffffff26;
+  border-radius: 12px;
+  background: #29394c;
+  color: #f6f1e7;
+  pointer-events: auto;
+}
+.flpcm-native-chat .flpcm-favorites,
+.flpcm-native-chat .flpcm-target-card {
+  visibility: hidden;
 }

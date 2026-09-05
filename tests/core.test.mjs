@@ -118,6 +118,20 @@ test('legacy intents remain readable without migration', () => {
   assert.equal(projectRequests([old], users)[0].id, 'legacyId')
   assert.equal(projectRequests([{ ...old, visible: false }], users).length, 0)
 })
+test('blind roll totals are never exposed in request history', () => {
+  const prompt = message(
+    'prompt',
+    'gm',
+    'request-event',
+    { requestId: 'r', status: 'waiting', roll: { kind: 'save', key: 'dex' } },
+    2
+  )
+  const rolled = message('rolled', 'p', 'request-roll', { requestId: 'r', promptId: 'prompt' }, 3)
+  Object.assign(rolled, { isContentVisible: false, speaker: { actor: 'actor' }, rolls: [{ total: 20 }] })
+  const [request] = projectRequests([intent(), prompt, rolled], users)
+  assert.equal(request.rolls[0].total, null)
+  assert.equal(request.prompts[0].done, true)
+})
 test('cancelled and concurrent requested rolls remain waiting and execute only once', async () => {
   const service = new RequestService(),
     r = {

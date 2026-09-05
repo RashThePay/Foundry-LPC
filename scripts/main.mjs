@@ -107,9 +107,7 @@ Hooks.once('ready', () => {
     })
     if (accepted && canvas.scene?.id === token.parent.id) {
       shell.primary = token.object
-      shell.follow = true
-      shell.lastFollow = null
-      shell.followToken()
+      await shell.recenter()
     }
   })
   game.modules.get(ID).api = {

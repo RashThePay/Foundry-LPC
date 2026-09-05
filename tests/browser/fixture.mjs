@@ -193,7 +193,7 @@ globalThis.CONFIG = {
 }
 globalThis.CONST = { CHAT_MESSAGE_STYLES: { OTHER: 0 } }
 globalThis.foundry = {
-  utils: { deepClone: structuredClone },
+  utils: { deepClone: (value) => structuredClone(value) },
   applications: {
     api: {
       DialogV2: { confirm: async () => true },
@@ -267,7 +267,7 @@ globalThis.ChatMessage = {
       ...data,
       ...flags(data.flags),
       id: `m${game.messages.size + 1}`,
-      author: user,
+      author: game.user,
       timestamp: Date.now(),
       visible: true,
       speaker: data.speaker || {},

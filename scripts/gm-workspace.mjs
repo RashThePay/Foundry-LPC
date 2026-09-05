@@ -1,6 +1,7 @@
 import { ID, esc, t, flag, list, setting, turnKey, button, choices, Lifetime } from './core.mjs'
 import { rollOptions } from './dnd5e-adapter.mjs'
 import { spriteForm, handleSpriteCommand, installConfigFields } from './preparation.mjs'
+import { PromptQueue } from './prompts.mjs'
 
 export class GMWorkspace extends foundry.applications.api.ApplicationV2 {
   static DEFAULT_OPTIONS = {
@@ -21,6 +22,7 @@ export class GMWorkspace extends foundry.applications.api.ApplicationV2 {
     this.seen = new Set()
     this.life = new Lifetime()
     this.docked = false
+    this.prompts = new PromptQueue()
   }
   install() {
     if (!game.user.isGM) return
@@ -31,7 +33,8 @@ export class GMWorkspace extends foundry.applications.api.ApplicationV2 {
     this.launcher.addEventListener('click', () =>
       this.render({ force: true, position: this.docked ? this.dockPosition() : placement.position || {} })
     )
-    document.body.append(this.launcher)
+    this.placeLauncher()
+    this.life.hook('renderSidebar', () => this.placeLauncher())
     for (const hook of [
       'createChatMessage',
       'updateChatMessage',
@@ -53,9 +56,38 @@ export class GMWorkspace extends foundry.applications.api.ApplicationV2 {
           !this.seen.has(doc.id)
         ) {
           this.seen.add(doc.id)
-          ui.notifications.info(t('newRequest'))
+          const request = this.requests.all().find((r) => r.messageId === doc.id)
+          if (request)
+            this.prompts.show(
+              doc.id,
+              t('interaction'),
+              `${game.users.get(request.playerId)?.name || ''}: ${request.text}`,
+              async () => {
+                this.selected = request.id
+                this.tab = 'requests'
+                await this.render({ force: true })
+              }
+            )
         }
         if (this.rendered) this.render()
+        if (
+          hook === 'createChatMessage' &&
+          flag(doc, 'kind') === 'request-roll' &&
+          doc.isContentVisible !== false
+        ) {
+          const request = this.requests.get(flag(doc, 'requestId'))
+          if (request)
+            this.prompts.show(
+              doc.id,
+              t('rollResult', { total: doc.rolls?.[0]?.total ?? '' }),
+              request.targetName,
+              async () => {
+                this.selected = request.id
+                this.tab = 'requests'
+                await this.render({ force: true })
+              }
+            )
+        }
       })
     this.life.interval(() => {
       if (this.rendered && this.tab === 'players' && !this.element.contains(document.activeElement))
@@ -65,6 +97,22 @@ export class GMWorkspace extends foundry.applications.api.ApplicationV2 {
       if (this.rendered && this.docked) this.setPosition(this.dockPosition())
     })
     this.updateLauncher()
+  }
+  placeLauncher() {
+    const menu = document.querySelector('#sidebar-tabs > menu')
+    if (menu) {
+      let item = menu.querySelector('[data-flpcm-launcher]')
+      if (!item) {
+        item = document.createElement('li')
+        item.dataset.flpcmLauncher = ''
+        menu.append(item)
+      }
+      item.append(this.launcher)
+      this.launcher.classList.add('flpcm-in-sidebar')
+    } else {
+      document.body.append(this.launcher)
+      this.launcher.classList.remove('flpcm-in-sidebar')
+    }
   }
   dockPosition() {
     return {

@@ -16,7 +16,9 @@ http
             ? 'text/css'
             : file.endsWith('.json')
               ? 'application/json'
-              : 'text/html'
+              : file.endsWith('.svg')
+                ? 'image/svg+xml'
+                : 'text/html'
       )
       res.end(body)
     } catch {

@@ -44,6 +44,7 @@ export async function roll(actor, kind, key, request) {
   const config = kind === 'skill' ? { skill: key } : ['check', 'save'].includes(kind) ? { ability: key } : {}
   const message = request
     ? {
+        rollMode: 'gmroll',
         data: {
           whisper: request.recipients,
           flags: { [ID]: { v: 1, kind: 'request-roll', requestId: request.id, promptId: request.promptId } }
