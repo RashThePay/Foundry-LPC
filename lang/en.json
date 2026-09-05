@@ -1,0 +1,9 @@
+{
+  "FLPCM.Title": "Foundry LPC Mobile",
+  "FLPCM.Settings.Enabled": "Enable player RPG mode",
+  "FLPCM.Settings.EnabledHint": "Replace the standard Foundry interface for non-GM users on compact screens.",
+  "FLPCM.Settings.DesktopPreview": "Preview on desktop",
+  "FLPCM.Settings.DesktopPreviewHint": "Show the player RPG interface regardless of screen size. This is a per-client setting.",
+  "FLPCM.Settings.MaxWidth": "Maximum automatic screen width",
+  "FLPCM.Settings.MaxWidthHint": "Automatically activate the interface at or below this CSS pixel width."
+}
